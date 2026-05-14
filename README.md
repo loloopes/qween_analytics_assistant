@@ -54,9 +54,11 @@ flowchart TB
 |------|------|
 | [`api/training_qween.ipynb`](api/training_qween.ipynb) | **Fine-tuning**: Qwen family models with **LoRA** (`peft`), **SQuAD**-style chat formatting, manual PyTorch training loop, **MLflow** metrics and artifacts, optional **Hugging Face Hub** publish for the adapter. |
 | [`api/langchain.ipynb`](api/langchain.ipynb) | **Inference & integration**: load base + adapter, **LangChain** `HuggingFacePipeline`, **PDF RAG** (`pypdf`, `RecursiveCharacterTextSplitter`, lexical retrieval), **Trino MCP** client (`langchain-mcp-adapters`), `ask_trino` **NL → SQL → query → summary** flow. |
-| [`api/requirements.txt`](api/requirements.txt) | Python dependencies: `torch`, `transformers`, `peft`, `datasets`, `mlflow`, `langchain*`, `huggingface_hub`, etc. |
+| [`api/env_loader.py`](api/env_loader.py) | Loads **`env.sample`** then **`.env`**, creates `.env` from the sample when missing, and resolves **Trino MCP** paths (Windows / Linux venv). |
+| [`api/notebook_bootstrap.py`](api/notebook_bootstrap.py) | One import for notebooks so **cwd** can be repo root, `llm/`, or `llm/api/`. |
+| [`api/download_hf_model.py`](api/download_hf_model.py) | Snapshot a Hub model to `./hf_models/...` for offline use (respects `HF_ENDPOINT` for mirrors). |
 
-The Trino side is wired through a **local MCP server** (see the notebook’s `TRINO_MCP_DIR` / `trino_mcp.py` and your Trino `.env`). Point those paths at **your** clone of the MCP project; the notebook defaults are written for a Linux/WSL layout and should be adjusted on Windows (e.g. `Path("C:/Users/.../project/mcp")` and `.venv/Scripts/python.exe`).
+The Trino side uses a **local MCP server**. Set **`TRINO_MCP_DIR`** and optionally **`TRINO_MCP_PYTHON`** in `.env`; otherwise paths default to **`<workspace>/mcp`** (parent of `llm/`) with `.venv/Scripts/python.exe` on Windows or `.venv/bin/python` on Linux/WSL.
 
 ---
 
@@ -85,20 +87,33 @@ Use a **GPU** for reasonable fine-tuning and inference latency; the training not
 
 ### 2. Secrets and configuration
 
-In `llm/api`, maintain a **`.env`** (not committed — see the repo root `.gitignore`). Typical variables:
+1. Copy **`api/env.sample`** → **`api/.env`** (or run any notebook / `download_hf_model.py` once: missing `.env` is created automatically from the sample).
+2. Edit **`.env`**: set **`HF_TOKEN`**, **`ADAPTER_REPO`** / **`HF_REPO_ID`**, and optional **`TRINO_MCP_DIR`** / **`TRINO_MCP_PYTHON`**.
 
 | Variable | Purpose |
 |----------|---------|
 | `HF_TOKEN` | Hugging Face read/write for private or gated models and adapter repos. |
-| `BASE_MODEL` | Override the default base model ID for training. |
+| `BASE_MODEL` | Base model id (default in sample is small **Qwen2.5-0.5B-Instruct**). |
+| `ADAPTER_REPO` | Hub id for the LoRA adapter used in `langchain.ipynb`. |
 | `HF_REPO_ID` / `HF_PRIVATE` | Target Hub repo when publishing adapters after training. |
+| `TRINO_MCP_DIR` / `TRINO_MCP_PYTHON` | Paths to your **MCP** checkout and its venv Python (optional if `../mcp` matches your tree). |
 
-For Trino + MCP, follow the **MCP server’s** `.env` (host, user, catalog, TLS, etc.) as referenced in `langchain.ipynb`.
+For Trino JDBC/catalog settings, use the **MCP server’s** own `.env`.
 
-### 3. Run the notebooks
+### 3. Docker (optional)
 
-1. **`training_qween.ipynb`** — configure `params` (samples, seq length, LoRA, MLflow experiment), run training, inspect metrics, save adapter under `qwen-qa-lora-cpu/adapter` (default layout), optionally run the publish cell to push the adapter to Hub.
-2. **`langchain.ipynb`** — install deps, set `BASE_MODEL` / `ADAPTER_REPO`, run Q&A and PDF RAG cells, then configure MCP paths and run **Trino** sections (`list_catalogs`, schema context, `ask_trino`).
+From **`llm/`**:
+
+```bash
+docker compose up --build
+```
+
+Open Jupyter Lab at **http://localhost:8888** and use the printed token. The `api/` folder is bind-mounted so notebook edits persist.
+
+### 4. Run the notebooks
+
+1. **`training_qween.ipynb`** — Run from **cwd** = repo root, `llm/`, or `llm/api/`. Section 2 loads env via `notebook_bootstrap`. Configure `params`, train, optionally publish the adapter.
+2. **`langchain.ipynb`** — Same cwd rules. **`BASE_MODEL`** / **`ADAPTER_REPO`** come from `.env` when set; Trino MCP paths use `env_loader.trino_mcp_paths()`.
 
 ---
 
