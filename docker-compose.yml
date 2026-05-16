@@ -1,0 +1,117 @@
+# LLM Q&A API — join the same Docker networks as MinIO, MLflow, Airflow, and Trino.
+#
+# Prereqs (from repo root):
+#   cd credit_risk_forecast && docker compose up -d          # creates minio_minio, credit_risk_forecast_default
+#   docker compose -f docker-compose.airflow.yml up -d       # Airflow on credit_risk_forecast_default
+#   cd ../trino && docker compose up -d                        # creates trino_trino-network (optional, for /trino/ask)
+#
+# Run:
+#   cd llm
+#   copy api\.env.example api\.env   # HF_TOKEN, etc.
+#   docker compose up -d --build
+#
+# API (host): http://localhost:8001/docs   (8001 avoids clash with credit_scoring_api on 8000)
+# In-stack:   http://llm-api:8000/ask
+
+services:
+  llm-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      args:
+        HF_TOKEN: ${HF_TOKEN:-}
+        SKIP_PREFETCH: ${SKIP_PREFETCH:-true}
+        BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
+        ADAPTER_REPO: ${ADAPTER_REPO:-Glccampos/llm_qween}
+    image: ${LLM_API_IMAGE:-local/llm-api:latest}
+    container_name: llm-api
+    hostname: llm-api
+    ports:
+      - "${LLM_API_PORT:-8001}:8000"
+    env_file:
+      - path: ./api/.env
+        required: false
+    environment:
+      LLM_IN_DOCKER: "1"
+      HF_TOKEN: ${HF_TOKEN:-}
+      BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
+      ADAPTER_REPO: ${ADAPTER_REPO:-Glccampos/llm_qween}
+      PDF_PATH: /app/data/analytics_engineer.pdf
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      TRINO_MCP_SSE_URL: http://llm-trino-mcp:8765/sse
+      TRINO_MCP_HOST: llm-trino-mcp
+      # MinIO / MLflow (same hostnames as credit_risk_forecast stack on shared networks)
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow_server:5000}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-admin}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-password1234}
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL:-http://minio:9000}
+      MLFLOW_S3_IGNORE_TLS: ${MLFLOW_S3_IGNORE_TLS:-true}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minio123}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minio123}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    depends_on:
+      llm-trino-mcp:
+        condition: service_healthy
+    networks:
+      - llm_internal
+      - minio_shared
+      - credit_risk_shared
+      - airflow_shared
+    restart: unless-stopped
+
+  llm-trino-mcp:
+    build:
+      context: ../mcp
+      dockerfile: Dockerfile
+    image: ${LLM_TRINO_MCP_IMAGE:-local/llm-trino-mcp:latest}
+    container_name: llm-trino-mcp
+    hostname: llm-trino-mcp
+    ports:
+      - "${MCP_PORT:-8765}:8765"
+    environment:
+      TRINO_HOST: ${TRINO_HOST:-trino}
+      TRINO_PORT: ${TRINO_PORT:-8080}
+      TRINO_USER: ${TRINO_USER:-admin}
+      TRINO_PASSWORD: ${TRINO_PASSWORD:-}
+      TRINO_HTTP_SCHEME: ${TRINO_HTTP_SCHEME:-http}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 8765), 3); s.close()\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - llm_internal
+      - trino_shared
+    restart: unless-stopped
+
+networks:
+  # llm-api <-> llm-trino-mcp (SSE on :8765)
+  llm_internal:
+    name: llm_internal
+  # MinIO (alias `minio`) — from credit_risk_forecast/docker-compose.yml
+  minio_shared:
+    external: true
+    name: minio_minio
+  # credit_api, Spark, etc.
+  credit_risk_shared:
+    external: true
+    name: credit_risk_shared
+  # MLflow + Airflow default project network (credit_risk_forecast/ compose + airflow compose)
+  airflow_shared:
+    external: true
+    name: ${AIRFLOW_DOCKER_NETWORK:-credit_risk_forecast_default}
+  # Trino coordinator hostname `trino`
+  trino_shared:
+    external: true
+    name: trino_trino-network
+
+volumes:
+  hf-cache:
